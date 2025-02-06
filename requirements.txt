@@ -4,3 +4,4 @@ pandas
 openpyxl
 googlemaps
 requests
+webdriver-manager
