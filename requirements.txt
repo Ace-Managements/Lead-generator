@@ -1,0 +1,6 @@
+flask
+selenium
+pandas
+openpyxl
+googlemaps
+requests
