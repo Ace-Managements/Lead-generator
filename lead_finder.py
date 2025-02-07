@@ -72,8 +72,16 @@ class BusinessLeadFinder:
             self.chrome_options.add_argument('--no-sandbox')
             self.chrome_options.add_argument('--disable-dev-shm-usage')
             self.chrome_options.add_argument('--disable-gpu')
+            self.chrome_options.add_argument('--disable-software-rasterizer')
+            self.chrome_options.add_argument('--disable-extensions')
             self.chrome_options.add_argument('--window-size=1920,1080')
-            self.chrome_options.add_argument('--disable-notifications')
+            self.chrome_options.add_argument('--start-maximized')
+            self.chrome_options.add_argument('--ignore-certificate-errors')
+            self.chrome_options.add_argument('--allow-running-insecure-content')
+            self.chrome_options.add_argument('--disable-web-security')
+            
+            # Add user agent
+            self.chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
             # Handle Chrome binary location for Render
             chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
@@ -128,36 +136,36 @@ class BusinessLeadFinder:
             time.sleep(1)
 
             info = {
-                'Business Name': name,
-                'Phone': '',
-                'Has Website': 'No',
-                'Website URL': '',
-                'Google Maps URL': driver.current_url,
-                'Business Hours': 'Hours not available',
-                'Rating': None,
-                'Review Count': 0,
-                'Called': 'No',
-                'Deal Status': 'Not Contacted',
-                'Notes': ''
+                'business_name': name,
+                'phone': '',
+                'has_website': 'No',
+                'website_url': '',
+                'google_maps_url': driver.current_url,
+                'business_hours': 'Hours not available',
+                'rating': None,
+                'review_count': 0,
+                'called': 'No',
+                'deal_status': 'Not Contacted',
+                'notes': ''
             }
 
             try:
                 rating_elem = WebDriverWait(driver, 3).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "span.MW4etd")))
-                info['Rating'] = float(rating_elem.text.strip())
+                info['rating'] = float(rating_elem.text.strip())
 
                 reviews = driver.find_element(By.CSS_SELECTOR, "span.UY7F9").text
                 if '(' in reviews:
                     count = re.search(r'\((\d+)\)', reviews)
                     if count:
-                        info['Review Count'] = int(count.group(1))
+                        info['review_count'] = int(count.group(1))
             except:
                 pass
 
             try:
                 website_elem = driver.find_element(By.CSS_SELECTOR, "a[data-tooltip='Open website']")
-                info['Has Website'] = 'Yes'
-                info['Website URL'] = website_elem.get_attribute('href')
+                info['has_website'] = 'Yes'
+                info['website_url'] = website_elem.get_attribute('href')
             except:
                 pass
 
@@ -167,7 +175,7 @@ class BusinessLeadFinder:
                 for elem in phone_elems:
                     text = elem.get_attribute("aria-label") or elem.text
                     if match := re.search(r'\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})', text):
-                        info['Phone'] = f"({match.group(1)}) {match.group(2)}-{match.group(3)}"
+                        info['phone'] = f"({match.group(1)}) {match.group(2)}-{match.group(3)}"
                         break
             except:
                 pass
@@ -179,7 +187,7 @@ class BusinessLeadFinder:
                 time.sleep(1)
                 hours = driver.find_elements(By.CSS_SELECTOR, "table tr")
                 if hours:
-                    info['Business Hours'] = "\n".join([h.text for h in hours if h.text.strip()])
+                    info['business_hours'] = "\n".join([h.text for h in hours if h.text.strip()])
             except:
                 pass
 
@@ -276,10 +284,10 @@ class BusinessLeadFinder:
                     called, deal_status, notes, city
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                lead['Business Name'], lead['Phone'], lead['Has Website'],
-                lead['Website URL'], lead['Google Maps URL'], lead['Business Hours'],
-                lead['Rating'], lead['Review Count'], lead['Called'],
-                lead['Deal Status'], lead['Notes'], lead.get('city', '')
+                lead['business_name'], lead['phone'], lead['has_website'],
+                lead['website_url'], lead['google_maps_url'], lead['business_hours'],
+                lead['rating'], lead['review_count'], lead['called'],
+                lead['deal_status'], lead['notes'], lead.get('city', '')
             ))
             self.conn.commit()
             return True
@@ -331,6 +339,7 @@ lead_finder = BusinessLeadFinder()
 
 @app.route('/health', methods=['GET'])
 def health_check():
+    """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat()
@@ -338,6 +347,7 @@ def health_check():
 
 @app.route('/generate_leads', methods=['POST'])
 def generate_leads():
+    """Generate leads endpoint"""
     try:
         data = request.get_json()
         if not data:
@@ -377,6 +387,7 @@ def generate_leads():
 
 @app.route('/fetch_leads', methods=['GET'])
 def fetch_leads():
+    """Fetch leads endpoint"""
     try:
         limit = request.args.get('limit', 100, type=int)
         leads = lead_finder.get_leads_from_db(limit)
@@ -393,6 +404,7 @@ def fetch_leads():
 
 @app.route('/clear_leads', methods=['POST'])
 def clear_leads():
+    """Clear leads endpoint"""
     try:
         success = lead_finder.clear_leads_db()
         return jsonify({
@@ -442,22 +454,9 @@ def index():
         }
     })
 
-def create_app():
-    """Factory function for creating the Flask app"""
-    app.config['JSON_SORT_KEYS'] = False
-    app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
-    return app
-
 if __name__ == "__main__":
     try:
-        # Get port from environment variable or default to 5000
         port = int(os.getenv("PORT", 5000))
-        
-        # Configure Flask app
-        app.config['JSON_SORT_KEYS'] = False
-        app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
-        
-        # Start the server
         app.run(host="0.0.0.0", port=port)
     except Exception as e:
         logging.error(f"Failed to start server: {str(e)}")
