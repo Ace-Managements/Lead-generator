@@ -4,9 +4,11 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn lead_finder:app
+    startCommand: gunicorn lead_finder:app --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.12
       - key: FLASK_ENV
         value: production
+      - key: PORT
+        value: 10000
