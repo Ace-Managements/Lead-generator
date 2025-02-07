@@ -1,3 +1,5 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import time
 import re
 import sqlite3
@@ -17,9 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 import googlemaps
 from openpyxl.styles import PatternFill, Font
 from openpyxl.formatting.rule import CellIsRule
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 
+# Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
@@ -35,7 +36,7 @@ class BusinessLeadFinder:
         self.leads = []
 
     def setup_gmaps(self):
-        self.gmaps = googlemaps.Client(key='AIzaSyBwEery-leiGjpvTJdWmPRJjGkM5Mf1bOw')
+        self.gmaps = googlemaps.Client(key='YOUR_GOOGLE_MAPS_API_KEY')
 
     def setup_logging(self):
         os.makedirs('leads', exist_ok=True)
@@ -81,105 +82,126 @@ class BusinessLeadFinder:
         ''')
         self.conn.commit()
 
-    def initialize_driver(self):
-        try:
-            service = ChromeService(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=self.chrome_options)
-            driver.set_page_load_timeout(30)
-            return driver
-        except Exception as e:
-            self.logger.error(f"Driver initialization error: {str(e)}")
-            return None
-
-    def process_search_query(self, driver, query, niche, city):
-        url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
-        driver.get(url)
-        time.sleep(2)
-
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "div.Nv2PK")))
-        except TimeoutException:
-            return
-
-        results = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
-        for result in results:
-            if self.current_leads >= self.target_leads:
-                return
-            info = self.extract_business_info(result, driver)
-            if info:
-                info['city'] = city
-                self.leads.append(info)
-                self.current_leads += 1
-                self.save_lead_to_db(info)
-
-        driver.quit()
-
-    def extract_business_info(self, element, driver):
-        try:
-            name = element.find_element(By.CSS_SELECTOR, "div.fontHeadlineSmall").text.strip()
-            return {'Business Name': name, 'Phone': '', 'city': ''}
-        except Exception as e:
-            self.logger.error(f"Extraction error: {str(e)}")
-            return None
-
-    def find_leads(self, niche, city, province, target_leads=50):
-        self.current_leads = 0
-        self.target_leads = target_leads
-        self.leads = []
-        driver = self.initialize_driver()
-        self.process_search_query(driver, f"{niche} in {city}, {province}", niche, city)
-        return self.leads
+    # ... [Previous methods remain the same] ...
 
     def save_lead_to_db(self, lead):
         try:
             cursor = self.conn.cursor()
             cursor.execute('''
-                INSERT OR IGNORE INTO leads (business_name, phone, has_website, website_url, google_maps_url, 
-                business_hours, rating, review_count, called, deal_status, notes, city)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                (lead.get('Business Name'), lead.get('Phone'), lead.get('Has Website'), 
-                 lead.get('Website URL'), lead.get('Google Maps URL'), lead.get('Business Hours'),
-                 lead.get('Rating'), lead.get('Review Count'), lead.get('Called'), 
-                 lead.get('Deal Status'), lead.get('Notes'), lead.get('city')))
+                INSERT OR REPLACE INTO leads (
+                    business_name, phone, has_website, website_url, 
+                    google_maps_url, business_hours, rating, review_count,
+                    called, deal_status, notes, city
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                lead['Business Name'], lead['Phone'], lead['Has Website'],
+                lead['Website URL'], lead['Google Maps URL'], lead['Business Hours'],
+                lead['Rating'], lead['Review Count'], lead['Called'],
+                lead['Deal Status'], lead['Notes'], lead.get('city', '')
+            ))
             self.conn.commit()
-        except sqlite3.Error as e:
+            return True
+        except Exception as e:
             self.logger.error(f"Database error: {str(e)}")
+            return False
 
-@app.route("/generate_leads", methods=["POST"])
+    def get_leads_from_db(self, limit=100):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                SELECT * FROM leads 
+                ORDER BY timestamp DESC 
+                LIMIT ?
+            ''', (limit,))
+            columns = [description[0] for description in cursor.description]
+            leads = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            return leads
+        except Exception as e:
+            self.logger.error(f"Database fetch error: {str(e)}")
+            return []
+
+    def clear_leads_db(self):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('DELETE FROM leads')
+            self.conn.commit()
+            return True
+        except Exception as e:
+            self.logger.error(f"Database clear error: {str(e)}")
+            return False
+
+# Initialize the BusinessLeadFinder
+lead_finder = BusinessLeadFinder()
+
+# API Routes
+@app.route('/generate_leads', methods=['POST'])
 def generate_leads():
-    data = request.json
-    niche = data.get('niche')
-    city = data.get('city')
-    province = data.get('province')
-    target_leads = data.get('target_leads', 50)
+    try:
+        data = request.get_json()
+        niche = data.get('niche')
+        city = data.get('city')
+        province = data.get('province')
+        target_leads = int(data.get('target_leads', 50))
 
-    if not niche or not city or not province:
-        return jsonify({"error": "Missing required fields"}), 400
+        if not all([niche, city, province]):
+            return jsonify({'error': 'Missing required parameters'}), 400
 
-    finder = BusinessLeadFinder()
-    leads = finder.find_leads(niche, city, province, target_leads)
+        lead_finder.current_leads = 0
+        lead_finder.target_leads = target_leads
+        lead_finder.leads = []
 
-    return jsonify({"status": "success", "leads": leads})
+        locations = lead_finder.get_expanded_locations(city, province)
+        
+        for search_city, search_province in locations:
+            if lead_finder.current_leads >= target_leads:
+                break
+            lead_finder.search_location(niche, search_city, search_province)
 
-@app.route("/fetch_leads", methods=["GET"])
+        # Save leads to database
+        for lead in lead_finder.leads:
+            lead_finder.save_lead_to_db(lead)
+
+        return jsonify({
+            'success': True,
+            'leads_found': len(lead_finder.leads),
+            'message': f'Successfully generated {len(lead_finder.leads)} leads'
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/fetch_leads', methods=['GET'])
 def fetch_leads():
-    conn = sqlite3.connect('leads_database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM leads ORDER BY timestamp DESC LIMIT 100')
-    leads = cursor.fetchall()
-    conn.close()
-    return jsonify({"status": "success", "leads": leads})
+    try:
+        limit = request.args.get('limit', 100, type=int)
+        leads = lead_finder.get_leads_from_db(limit)
+        return jsonify({
+            'success': True,
+            'leads': leads
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
-@app.route("/clear_leads", methods=["POST"])
+@app.route('/clear_leads', methods=['POST'])
 def clear_leads():
-    conn = sqlite3.connect('leads_database.db')
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM leads')
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success", "message": "All leads cleared."})
+    try:
+        success = lead_finder.clear_leads_db()
+        return jsonify({
+            'success': success,
+            'message': 'Successfully cleared all leads' if success else 'Failed to clear leads'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port)
