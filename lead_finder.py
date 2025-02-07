@@ -62,6 +62,7 @@ class BusinessLeadFinder:
         cursor = self.conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 business_name TEXT,
                 phone TEXT,
                 has_website TEXT,
@@ -74,6 +75,7 @@ class BusinessLeadFinder:
                 deal_status TEXT,
                 notes TEXT,
                 city TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(business_name, city)
             )
         ''')
@@ -109,6 +111,7 @@ class BusinessLeadFinder:
                 info['city'] = city
                 self.leads.append(info)
                 self.current_leads += 1
+                self.save_lead_to_db(info)
 
         driver.quit()
 
@@ -128,6 +131,21 @@ class BusinessLeadFinder:
         self.process_search_query(driver, f"{niche} in {city}, {province}", niche, city)
         return self.leads
 
+    def save_lead_to_db(self, lead):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR IGNORE INTO leads (business_name, phone, has_website, website_url, google_maps_url, 
+                business_hours, rating, review_count, called, deal_status, notes, city)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (lead.get('Business Name'), lead.get('Phone'), lead.get('Has Website'), 
+                 lead.get('Website URL'), lead.get('Google Maps URL'), lead.get('Business Hours'),
+                 lead.get('Rating'), lead.get('Review Count'), lead.get('Called'), 
+                 lead.get('Deal Status'), lead.get('Notes'), lead.get('city')))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error: {str(e)}")
+
 @app.route("/generate_leads", methods=["POST"])
 def generate_leads():
     data = request.json
@@ -143,6 +161,24 @@ def generate_leads():
     leads = finder.find_leads(niche, city, province, target_leads)
 
     return jsonify({"status": "success", "leads": leads})
+
+@app.route("/fetch_leads", methods=["GET"])
+def fetch_leads():
+    conn = sqlite3.connect('leads_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM leads ORDER BY timestamp DESC LIMIT 100')
+    leads = cursor.fetchall()
+    conn.close()
+    return jsonify({"status": "success", "leads": leads})
+
+@app.route("/clear_leads", methods=["POST"])
+def clear_leads():
+    conn = sqlite3.connect('leads_database.db')
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM leads')
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "success", "message": "All leads cleared."})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
