@@ -38,62 +38,78 @@ class BusinessLeadFinder:
         self.leads = []
 
     def setup_gmaps(self):
-        api_key = os.getenv('GOOGLE_MAPS_API_KEY')
-        if not api_key:
-            self.logger.warning("Google Maps API key not found in environment variables")
-        self.gmaps = googlemaps.Client(key=api_key)
+        try:
+            api_key = os.getenv('GOOGLE_MAPS_API_KEY')
+            if not api_key:
+                self.logger.warning("Google Maps API key not found in environment variables")
+                self.gmaps = None
+            else:
+                self.gmaps = googlemaps.Client(key=api_key)
+        except Exception as e:
+            self.logger.error(f"Error setting up Google Maps client: {str(e)}")
+            self.gmaps = None
 
     def setup_logging(self):
-        os.makedirs('logs', exist_ok=True)
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler('logs/lead_finder.log')
-            ]
-        )
-        self.logger = logging.getLogger('LeadFinder')
+        try:
+            os.makedirs('logs', exist_ok=True)
+            logging.basicConfig(
+                level=logging.INFO,
+                format='%(asctime)s - %(levelname)s - %(message)s',
+                handlers=[
+                    logging.StreamHandler(),
+                    logging.FileHandler('logs/lead_finder.log', mode='a')
+                ]
+            )
+            self.logger = logging.getLogger('LeadFinder')
+        except Exception as e:
+            print(f"Error setting up logging: {str(e)}")
+            self.logger = logging.getLogger('LeadFinder')
 
     def setup_driver_options(self):
-        self.chrome_options = Options()
-        self.chrome_options.add_argument('--headless=new')
-        self.chrome_options.add_argument('--no-sandbox')
-        self.chrome_options.add_argument('--disable-dev-shm-usage')
-        self.chrome_options.add_argument('--disable-gpu')
-        self.chrome_options.add_argument('--window-size=1920,1080')
-        self.chrome_options.add_argument('--disable-notifications')
-        self.chrome_options.add_argument('--incognito')
-        
-        # Render-specific Chrome binary location
-        chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
-        if chrome_bin:
-            self.chrome_options.binary_location = chrome_bin
+        try:
+            self.chrome_options = Options()
+            self.chrome_options.add_argument('--headless=new')
+            self.chrome_options.add_argument('--no-sandbox')
+            self.chrome_options.add_argument('--disable-dev-shm-usage')
+            self.chrome_options.add_argument('--disable-gpu')
+            self.chrome_options.add_argument('--window-size=1920,1080')
+            self.chrome_options.add_argument('--disable-notifications')
+            
+            # Handle Chrome binary location for Render
+            chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
+            if chrome_bin:
+                self.chrome_options.binary_location = chrome_bin
+        except Exception as e:
+            self.logger.error(f"Error setting up Chrome options: {str(e)}")
 
     def setup_database(self):
-        db_path = os.getenv('DATABASE_PATH', 'leads_database.db')
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS leads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                business_name TEXT,
-                phone TEXT,
-                has_website TEXT,
-                website_url TEXT,
-                google_maps_url TEXT,
-                business_hours TEXT,
-                rating REAL,
-                review_count INTEGER,
-                called TEXT,
-                deal_status TEXT,
-                notes TEXT,
-                city TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(business_name, city)
-            )
-        ''')
-        self.conn.commit()
+        try:
+            db_path = os.getenv('DATABASE_PATH', 'leads_database.db')
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS leads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    business_name TEXT,
+                    phone TEXT,
+                    has_website TEXT,
+                    website_url TEXT,
+                    google_maps_url TEXT,
+                    business_hours TEXT,
+                    rating REAL,
+                    review_count INTEGER,
+                    called TEXT,
+                    deal_status TEXT,
+                    notes TEXT,
+                    city TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(business_name, city)
+                )
+            ''')
+            self.conn.commit()
+        except Exception as e:
+            self.logger.error(f"Database setup error: {str(e)}")
+            raise
 
     def initialize_driver(self):
         try:
@@ -170,18 +186,22 @@ class BusinessLeadFinder:
             return info
 
         except Exception as e:
-            self.logger.error(f"Extraction error: {str(e)}")
+            self.logger.error(f"Extraction error for business: {str(e)}")
             return None
 
     def process_search_query(self, driver, query, city):
         url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
-        driver.get(url)
-        time.sleep(2)
-
         try:
+            driver.get(url)
+            time.sleep(2)
+
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "div.Nv2PK")))
         except TimeoutException:
+            self.logger.warning(f"Timeout while loading search results for query: {query}")
+            return
+        except Exception as e:
+            self.logger.error(f"Error processing search query: {str(e)}")
             return
 
         last_height = 0
@@ -189,31 +209,36 @@ class BusinessLeadFinder:
         processed_count = 0
 
         while scroll_attempts < 20 and self.current_leads < self.target_leads:
-            results = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
-            
-            for result in results[processed_count:]:
-                if self.current_leads >= self.target_leads:
-                    return
-                    
-                info = self.extract_business_info(result, driver)
-                if info:
-                    info['city'] = city
-                    self.leads.append(info)
-                    self.save_lead_to_db(info)
-                    self.current_leads += 1
-                    self.logger.info(f"Collected leads: {self.current_leads}/{self.target_leads}")
+            try:
+                results = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
                 
-                processed_count += 1
+                for result in results[processed_count:]:
+                    if self.current_leads >= self.target_leads:
+                        return
+                        
+                    info = self.extract_business_info(result, driver)
+                    if info:
+                        info['city'] = city
+                        self.leads.append(info)
+                        self.save_lead_to_db(info)
+                        self.current_leads += 1
+                        self.logger.info(f"Collected leads: {self.current_leads}/{self.target_leads}")
+                    
+                    processed_count += 1
 
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1)
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1)
 
-            new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
-                scroll_attempts += 1
-            else:
-                scroll_attempts = 0
-                last_height = new_height
+                new_height = driver.execute_script("return document.body.scrollHeight")
+                if new_height == last_height:
+                    scroll_attempts += 1
+                else:
+                    scroll_attempts = 0
+                    last_height = new_height
+
+            except Exception as e:
+                self.logger.error(f"Error while scrolling/processing results: {str(e)}")
+                break
 
     def search_location(self, niche, city, province):
         driver = None
@@ -235,6 +260,8 @@ class BusinessLeadFinder:
                     break
                 self.process_search_query(driver, query, city)
 
+        except Exception as e:
+            self.logger.error(f"Error searching location {city}: {str(e)}")
         finally:
             if driver:
                 driver.quit()
@@ -257,7 +284,7 @@ class BusinessLeadFinder:
             self.conn.commit()
             return True
         except Exception as e:
-            self.logger.error(f"Database error: {str(e)}")
+            self.logger.error(f"Database error while saving lead: {str(e)}")
             return False
 
     def get_leads_from_db(self, limit=100):
@@ -304,7 +331,10 @@ lead_finder = BusinessLeadFinder()
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat()
+    })
 
 @app.route('/generate_leads', methods=['POST'])
 def generate_leads():
@@ -376,6 +406,59 @@ def clear_leads():
             'error': str(e)
         }), 500
 
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint providing API documentation"""
+    return jsonify({
+        'status': 'running',
+        'version': '1.0',
+        'endpoints': {
+            '/': 'GET - This documentation',
+            '/generate_leads': {
+                'method': 'POST',
+                'description': 'Generate new leads',
+                'payload': {
+                    'niche': 'Business type/category',
+                    'city': 'Target city',
+                    'province': 'Province/State',
+                    'target_leads': 'Number of leads to generate (default: 50)'
+                }
+            },
+            '/fetch_leads': {
+                'method': 'GET',
+                'description': 'Retrieve stored leads',
+                'parameters': {
+                    'limit': 'Maximum number of leads to return (default: 100)'
+                }
+            },
+            '/clear_leads': {
+                'method': 'POST',
+                'description': 'Clear all stored leads'
+            },
+            '/health': {
+                'method': 'GET',
+                'description': 'Check service health status'
+            }
+        }
+    })
+
+def create_app():
+    """Factory function for creating the Flask app"""
+    app.config['JSON_SORT_KEYS'] = False
+    app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
+    return app
+
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    try:
+        # Get port from environment variable or default to 5000
+        port = int(os.getenv("PORT", 5000))
+        
+        # Configure Flask app
+        app.config['JSON_SORT_KEYS'] = False
+        app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
+        
+        # Start the server
+        app.run(host="0.0.0.0", port=port)
+    except Exception as e:
+        logging.error(f"Failed to start server: {str(e)}")
+        raise
