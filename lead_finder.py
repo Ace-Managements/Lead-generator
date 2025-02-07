@@ -18,8 +18,10 @@ import googlemaps
 from openpyxl.styles import PatternFill, Font
 from openpyxl.formatting.rule import CellIsRule
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 
 class BusinessLeadFinder:
     def __init__(self):
