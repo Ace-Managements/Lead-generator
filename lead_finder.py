@@ -17,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 import googlemaps
 from openpyxl.styles import PatternFill, Font
 from openpyxl.formatting.rule import CellIsRule
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
 
 class BusinessLeadFinder:
     def __init__(self):
@@ -84,74 +87,6 @@ class BusinessLeadFinder:
             self.logger.error(f"Driver initialization error: {str(e)}")
             return None
 
-    def extract_business_info(self, element, driver):
-        try:
-            name = element.find_element(By.CSS_SELECTOR, "div.fontHeadlineSmall").text.strip()
-            element.click()
-            time.sleep(1)
-
-            info = {
-                'Business Name': name,
-                'Phone': '',
-                'Has Website': 'No',
-                'Website URL': '',
-                'Google Maps URL': driver.current_url,
-                'Business Hours': 'Hours not available',
-                'Rating': None,
-                'Review Count': 0,
-                'Called': 'No',
-                'Deal Status': 'Not Contacted',
-                'Notes': ''
-            }
-
-            try:
-                rating_elem = WebDriverWait(driver, 3).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "span.MW4etd")))
-                info['Rating'] = float(rating_elem.text.strip())
-
-                reviews = driver.find_element(By.CSS_SELECTOR, "span.UY7F9").text
-                if '(' in reviews:
-                    count = re.search(r'\((\d+)\)', reviews)
-                    if count:
-                        info['Review Count'] = int(count.group(1))
-            except:
-                pass
-
-            try:
-                website_elem = driver.find_element(By.CSS_SELECTOR, "a[data-tooltip='Open website']")
-                info['Has Website'] = 'Yes'
-                info['Website URL'] = website_elem.get_attribute('href')
-            except:
-                pass
-
-            try:
-                phone_elems = driver.find_elements(By.CSS_SELECTOR, 
-                    "button[data-tooltip*='phone'], div[aria-label*='Phone']")
-                for elem in phone_elems:
-                    text = elem.get_attribute("aria-label") or elem.text
-                    if match := re.search(r'\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})', text):
-                        info['Phone'] = f"({match.group(1)}) {match.group(2)}-{match.group(3)}"
-                        break
-            except:
-                pass
-
-            try:
-                hours_button = WebDriverWait(driver, 3).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "button[aria-label*='hours']")))
-                driver.execute_script("arguments[0].click();", hours_button)
-                time.sleep(1)
-                hours = driver.find_elements(By.CSS_SELECTOR, "table tr")
-                if hours:
-                    info['Business Hours'] = "\n".join([h.text for h in hours if h.text.strip()])
-            except:
-                pass
-
-            return info
-
-        except Exception as e:
-            self.logger.error(f"Extraction error: {str(e)}")
-            return None
-
     def process_search_query(self, driver, query, niche, city):
         url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
         driver.get(url)
@@ -163,181 +98,50 @@ class BusinessLeadFinder:
         except TimeoutException:
             return
 
-        last_height = 0
-        scroll_attempts = 0
-        processed_count = 0
-
-        while scroll_attempts < 20 and self.current_leads < self.target_leads:
-            results = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
-            
-            for result in results[processed_count:]:
-                if self.current_leads >= self.target_leads:
-                    return
-                    
-                info = self.extract_business_info(result, driver)
-                if info:
-                    info['city'] = city
-                    self.leads.append(info)
-                    self.current_leads += 1
-                    print(f"\rCollected leads: {self.current_leads}/{self.target_leads}", end="", flush=True)
-                
-                processed_count += 1
-
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1)
-
-            new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
-                scroll_attempts += 1
-            else:
-                scroll_attempts = 0
-                last_height = new_height
-
-    def search_location(self, niche, city, province):
-        driver = None
-        try:
-            driver = self.initialize_driver()
-            if not driver:
+        results = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
+        for result in results:
+            if self.current_leads >= self.target_leads:
                 return
+            info = self.extract_business_info(result, driver)
+            if info:
+                info['city'] = city
+                self.leads.append(info)
+                self.current_leads += 1
 
-            search_queries = [
-                f"{niche} in {city}, {province}",
-                f"local {niche} {city}",
-                f"{niche} services {city}",
-                f"best {niche} {city}",
-                f"residential {niche} {city}"
-            ]
+        driver.quit()
 
-            for query in search_queries:
-                if self.current_leads >= self.target_leads:
-                    break
-                self.process_search_query(driver, query, niche, city)
-
-        finally:
-            if driver:
-                driver.quit()
-
-    def save_to_excel(self, leads, niche, city):
-        if not leads:
+    def extract_business_info(self, element, driver):
+        try:
+            name = element.find_element(By.CSS_SELECTOR, "div.fontHeadlineSmall").text.strip()
+            return {'Business Name': name, 'Phone': '', 'city': ''}
+        except Exception as e:
+            self.logger.error(f"Extraction error: {str(e)}")
             return None
-            
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        filename = os.path.abspath(f'leads/leads_{niche}_{city}_{timestamp}.xlsx')
-        
-        df = pd.DataFrame(leads)
-        
-        columns = [
-            'Business Name',
-            'Phone',
-            'Has Website',
-            'Website URL',
-            'Google Maps URL',
-            'Business Hours',
-            'Rating',
-            'Review Count',
-            'Called',
-            'Deal Status',
-            'Notes'
-        ]
-        
-        for col in columns:
-            if col not in df.columns:
-                df[col] = ''
-                
-        df = df[columns]
-        
-        writer = pd.ExcelWriter(filename, engine='openpyxl')
-        df.to_excel(writer, index=False, sheet_name='Leads')
-        
-        worksheet = writer.sheets['Leads']
-        
-        for idx, col in enumerate(df.columns):
-            max_length = max(
-                df[col].astype(str).apply(len).max(),
-                len(col)
-            ) + 2
-            worksheet.column_dimensions[chr(65 + idx)].width = min(max_length, 50)
-        
-        writer.close()
-        print(f"\nSaved {len(leads)} leads to: {filename}")
-        return filename
 
-    def find_leads(self, niche, target_leads=50):
-        city = input("Enter city name: ").strip()
-        province = input("Enter province/state: ").strip()
-        
+    def find_leads(self, niche, city, province, target_leads=50):
         self.current_leads = 0
         self.target_leads = target_leads
         self.leads = []
-        
-        locations = self.get_expanded_locations(city, province)
-        print(f"\nSearching for {target_leads} {niche} businesses...")
-        
-        for search_city, search_province in locations:
-            if self.current_leads >= target_leads:
-                break
-            self.search_location(niche, search_city, search_province)
-        
-        if self.leads:
-            self.save_to_excel(self.leads, niche, city)
-        
+        driver = self.initialize_driver()
+        self.process_search_query(driver, f"{niche} in {city}, {province}", niche, city)
         return self.leads
 
-    def get_expanded_locations(self, city, province):
-        nearby_locations = {
-            'Toronto': ['North York', 'Scarborough', 'Etobicoke'],
-            'Vancouver': ['Burnaby', 'Richmond', 'Surrey'],
-            'Montreal': ['Laval', 'Longueuil', 'Brossard'],
-            'Calgary': ['Airdrie', 'Cochrane', 'Chestermere'],
-            'Mississauga': ['Brampton', 'Oakville', 'Milton']
-        }
-        locations = [(city, province)]
-        if city in nearby_locations:
-            for nearby_city in nearby_locations[city][:2]:
-                locations.append((nearby_city, province))
-        return locations
+@app.route("/generate_leads", methods=["POST"])
+def generate_leads():
+    data = request.json
+    niche = data.get('niche')
+    city = data.get('city')
+    province = data.get('province')
+    target_leads = data.get('target_leads', 50)
 
-def main():
-    print("Business Lead Finder v3.0")
-    print("-" * 30)
-    
+    if not niche or not city or not province:
+        return jsonify({"error": "Missing required fields"}), 400
+
     finder = BusinessLeadFinder()
-    
-    while True:
-        try:
-            niche = input("\nEnter business type (or 'quit' to exit): ").strip()
-            if niche.lower() == 'quit':
-                break
-                
-            target = input("Enter number of leads to find: ").strip()
-            if not target.isdigit():
-                print("Please enter a valid number")
-                continue
-                
-            target_leads = int(target)
-            leads = finder.find_leads(niche, target_leads)
-            
-            if leads:
-                print(f"\nFound {len(leads)} leads")
-                print("\nSample leads:")
-                for idx, lead in enumerate(leads[:5], 1):
-                    print(f"\n{idx}. {lead['Business Name']}")
-                    print(f"   Phone: {lead['Phone']}")
-                    print(f"   Rating: {lead['Rating']} ({lead['Review Count']} reviews)")
-                    print(f"   Location: {lead['city']}")
-                    if lead['Website URL']:
-                        print(f"   Website: {lead['Website URL']}")
-            else:
-                print("\nNo qualified leads found")
-                
-        except KeyboardInterrupt:
-            print("\nOperation cancelled")
-            break
-        except Exception as e:
-            print(f"Error: {str(e)}")
-            continue
-            
-    print("\nThank you for using Business Lead Finder!")
+    leads = finder.find_leads(niche, city, province, target_leads)
+
+    return jsonify({"status": "success", "leads": leads})
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
