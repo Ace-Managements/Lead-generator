@@ -17,8 +17,10 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 import googlemaps
-from openpyxl.styles import PatternFill, Font
-from openpyxl.formatting.rule import CellIsRule
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -36,15 +38,20 @@ class BusinessLeadFinder:
         self.leads = []
 
     def setup_gmaps(self):
-        self.gmaps = googlemaps.Client(key='YOUR_GOOGLE_MAPS_API_KEY')
+        api_key = os.getenv('GOOGLE_MAPS_API_KEY')
+        if not api_key:
+            self.logger.warning("Google Maps API key not found in environment variables")
+        self.gmaps = googlemaps.Client(key=api_key)
 
     def setup_logging(self):
-        os.makedirs('leads', exist_ok=True)
         os.makedirs('logs', exist_ok=True)
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[logging.FileHandler('logs/lead_finder.log'), logging.StreamHandler()]
+            handlers=[
+                logging.StreamHandler(),
+                logging.FileHandler('logs/lead_finder.log')
+            ]
         )
         self.logger = logging.getLogger('LeadFinder')
 
@@ -53,13 +60,19 @@ class BusinessLeadFinder:
         self.chrome_options.add_argument('--headless=new')
         self.chrome_options.add_argument('--no-sandbox')
         self.chrome_options.add_argument('--disable-dev-shm-usage')
+        self.chrome_options.add_argument('--disable-gpu')
         self.chrome_options.add_argument('--window-size=1920,1080')
         self.chrome_options.add_argument('--disable-notifications')
         self.chrome_options.add_argument('--incognito')
-        self.chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        
+        # Render-specific Chrome binary location
+        chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
+        if chrome_bin:
+            self.chrome_options.binary_location = chrome_bin
 
     def setup_database(self):
-        self.conn = sqlite3.connect('leads_database.db')
+        db_path = os.getenv('DATABASE_PATH', 'leads_database.db')
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         cursor = self.conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS leads (
@@ -82,7 +95,149 @@ class BusinessLeadFinder:
         ''')
         self.conn.commit()
 
-    # ... [Previous methods remain the same] ...
+    def initialize_driver(self):
+        try:
+            service = ChromeService(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=self.chrome_options)
+            driver.set_page_load_timeout(30)
+            return driver
+        except Exception as e:
+            self.logger.error(f"Driver initialization error: {str(e)}")
+            return None
+
+    def extract_business_info(self, element, driver):
+        try:
+            name = element.find_element(By.CSS_SELECTOR, "div.fontHeadlineSmall").text.strip()
+            element.click()
+            time.sleep(1)
+
+            info = {
+                'Business Name': name,
+                'Phone': '',
+                'Has Website': 'No',
+                'Website URL': '',
+                'Google Maps URL': driver.current_url,
+                'Business Hours': 'Hours not available',
+                'Rating': None,
+                'Review Count': 0,
+                'Called': 'No',
+                'Deal Status': 'Not Contacted',
+                'Notes': ''
+            }
+
+            try:
+                rating_elem = WebDriverWait(driver, 3).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "span.MW4etd")))
+                info['Rating'] = float(rating_elem.text.strip())
+
+                reviews = driver.find_element(By.CSS_SELECTOR, "span.UY7F9").text
+                if '(' in reviews:
+                    count = re.search(r'\((\d+)\)', reviews)
+                    if count:
+                        info['Review Count'] = int(count.group(1))
+            except:
+                pass
+
+            try:
+                website_elem = driver.find_element(By.CSS_SELECTOR, "a[data-tooltip='Open website']")
+                info['Has Website'] = 'Yes'
+                info['Website URL'] = website_elem.get_attribute('href')
+            except:
+                pass
+
+            try:
+                phone_elems = driver.find_elements(By.CSS_SELECTOR, 
+                    "button[data-tooltip*='phone'], div[aria-label*='Phone']")
+                for elem in phone_elems:
+                    text = elem.get_attribute("aria-label") or elem.text
+                    if match := re.search(r'\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})', text):
+                        info['Phone'] = f"({match.group(1)}) {match.group(2)}-{match.group(3)}"
+                        break
+            except:
+                pass
+
+            try:
+                hours_button = WebDriverWait(driver, 3).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "button[aria-label*='hours']")))
+                driver.execute_script("arguments[0].click();", hours_button)
+                time.sleep(1)
+                hours = driver.find_elements(By.CSS_SELECTOR, "table tr")
+                if hours:
+                    info['Business Hours'] = "\n".join([h.text for h in hours if h.text.strip()])
+            except:
+                pass
+
+            return info
+
+        except Exception as e:
+            self.logger.error(f"Extraction error: {str(e)}")
+            return None
+
+    def process_search_query(self, driver, query, city):
+        url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
+        driver.get(url)
+        time.sleep(2)
+
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.Nv2PK")))
+        except TimeoutException:
+            return
+
+        last_height = 0
+        scroll_attempts = 0
+        processed_count = 0
+
+        while scroll_attempts < 20 and self.current_leads < self.target_leads:
+            results = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
+            
+            for result in results[processed_count:]:
+                if self.current_leads >= self.target_leads:
+                    return
+                    
+                info = self.extract_business_info(result, driver)
+                if info:
+                    info['city'] = city
+                    self.leads.append(info)
+                    self.save_lead_to_db(info)
+                    self.current_leads += 1
+                    self.logger.info(f"Collected leads: {self.current_leads}/{self.target_leads}")
+                
+                processed_count += 1
+
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(1)
+
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                scroll_attempts += 1
+            else:
+                scroll_attempts = 0
+                last_height = new_height
+
+    def search_location(self, niche, city, province):
+        driver = None
+        try:
+            driver = self.initialize_driver()
+            if not driver:
+                return
+
+            search_queries = [
+                f"{niche} in {city}, {province}",
+                f"local {niche} {city}",
+                f"{niche} services {city}",
+                f"best {niche} {city}",
+                f"residential {niche} {city}"
+            ]
+
+            for query in search_queries:
+                if self.current_leads >= self.target_leads:
+                    break
+                self.process_search_query(driver, query, city)
+
+        finally:
+            if driver:
+                driver.quit()
 
     def save_lead_to_db(self, lead):
         try:
@@ -130,14 +285,34 @@ class BusinessLeadFinder:
             self.logger.error(f"Database clear error: {str(e)}")
             return False
 
+    def get_expanded_locations(self, city, province):
+        nearby_locations = {
+            'Toronto': ['North York', 'Scarborough', 'Etobicoke'],
+            'Vancouver': ['Burnaby', 'Richmond', 'Surrey'],
+            'Montreal': ['Laval', 'Longueuil', 'Brossard'],
+            'Calgary': ['Airdrie', 'Cochrane', 'Chestermere'],
+            'Mississauga': ['Brampton', 'Oakville', 'Milton']
+        }
+        locations = [(city, province)]
+        if city in nearby_locations:
+            for nearby_city in nearby_locations[city][:2]:
+                locations.append((nearby_city, province))
+        return locations
+
 # Initialize the BusinessLeadFinder
 lead_finder = BusinessLeadFinder()
 
-# API Routes
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+
 @app.route('/generate_leads', methods=['POST'])
 def generate_leads():
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+
         niche = data.get('niche')
         city = data.get('city')
         province = data.get('province')
@@ -157,10 +332,6 @@ def generate_leads():
                 break
             lead_finder.search_location(niche, search_city, search_province)
 
-        # Save leads to database
-        for lead in lead_finder.leads:
-            lead_finder.save_lead_to_db(lead)
-
         return jsonify({
             'success': True,
             'leads_found': len(lead_finder.leads),
@@ -168,6 +339,7 @@ def generate_leads():
         })
 
     except Exception as e:
+        app.logger.error(f"Generate leads error: {str(e)}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -183,6 +355,7 @@ def fetch_leads():
             'leads': leads
         })
     except Exception as e:
+        app.logger.error(f"Fetch leads error: {str(e)}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -197,11 +370,12 @@ def clear_leads():
             'message': 'Successfully cleared all leads' if success else 'Failed to clear leads'
         })
     except Exception as e:
+        app.logger.error(f"Clear leads error: {str(e)}")
         return jsonify({
             'success': False,
             'error': str(e)
         }), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
