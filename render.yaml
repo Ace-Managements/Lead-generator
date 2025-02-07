@@ -2,12 +2,10 @@ services:
   - type: web
     name: lead-finder
     env: python
-    plan: free
+    python_version: 3.11.6
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn lead_finder:app --timeout 120
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.9.12
       - key: FLASK_ENV
         value: production
       - key: PORT
