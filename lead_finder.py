@@ -37,22 +37,51 @@ class BusinessLeadFinder:
         self.leads = []
 
     def setup_driver_options(self):
-        try:
-            self.chrome_options = Options()
-            self.chrome_options.add_argument('--headless=new')
-            self.chrome_options.add_argument('--no-sandbox')
-            self.chrome_options.add_argument('--disable-dev-shm-usage')
-            self.chrome_options.add_argument('--disable-gpu')
-            self.chrome_options.add_argument('--disable-software-rasterizer')
-            self.chrome_options.add_argument('--disable-extensions')
-            self.chrome_options.add_argument('--window-size=1920,1080')
-            self.chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    try:
+        self.chrome_options = Options()
+        
+        # Basic settings
+        self.chrome_options.add_argument('--headless=new')
+        self.chrome_options.add_argument('--no-sandbox')
+        self.chrome_options.add_argument('--disable-dev-shm-usage')
+        
+        # Additional required settings for Render
+        self.chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        self.chrome_options.add_argument('--disable-notifications')
+        self.chrome_options.add_argument('--disable-geolocation')
+        self.chrome_options.add_argument('--ignore-certificate-errors')
+        self.chrome_options.add_argument('--disable-infobars')
+        self.chrome_options.add_argument('--remote-debugging-port=9222')
+        
+        # Set window size
+        self.chrome_options.add_argument('--window-size=1920,1080')
+        
+        # Add realistic user agent
+        self.chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        
+        # Additional performance settings
+        self.chrome_options.add_argument('--disable-gpu')
+        self.chrome_options.add_argument('--disable-software-rasterizer')
+        self.chrome_options.add_argument('--disable-extensions')
+        
+        # Memory settings
+        self.chrome_options.add_argument('--disable-dev-shm-usage')
+        self.chrome_options.add_argument('--memory-pressure-off')
+        
+        # Add experimental options
+        self.chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        self.chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        # Handle Chrome binary location for Render
+        chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
+        if chrome_bin:
+            logger.info(f"Using Chrome binary at: {chrome_bin}")
+            self.chrome_options.binary_location = chrome_bin
             
-            chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
-            if chrome_bin:
-                self.chrome_options.binary_location = chrome_bin
-        except Exception as e:
-            logger.error(f"Error setting up Chrome options: {str(e)}")
+        logger.info("Chrome options setup completed successfully")
+    except Exception as e:
+        logger.error(f"Error setting up Chrome options: {str(e)}")
+        raise
 
     def setup_database(self):
         try:
