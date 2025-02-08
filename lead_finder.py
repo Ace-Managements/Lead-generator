@@ -109,49 +109,83 @@ class BusinessLeadFinder:
             raise
 
     def search_business(self, niche, city, province, max_leads=10):
-        driver = None
-        try:
-            # Initialize driver
-            service = ChromeService()
-            driver = webdriver.Chrome(service=service, options=self.chrome_options)
-            driver.set_page_load_timeout(30)
-
-            # Construct search query
-            search_query = f"{niche} in {city}, {province}"
-            url = f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}"
-            
-            logger.info(f"Searching: {url}")
-            driver.get(url)
-            time.sleep(2)  # Allow page to load
-
-            # Find and process results
-            results = []
+    driver = None
+    try:
+        logger.info(f"Starting search for {niche} in {city}, {province}")
+        
+        # Initialize driver with retries
+        for attempt in range(3):
             try:
-                elements = WebDriverWait(driver, 10).until(
-                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.Nv2PK"))
-                )
-                
-                for element in elements[:max_leads]:
-                    try:
-                        info = self.extract_business_info(element, driver)
-                        if info:
-                            info['city'] = city
-                            results.append(info)
-                            self.save_lead_to_db(info)
-                    except Exception as e:
-                        logger.error(f"Error extracting business info: {str(e)}")
-                        continue
-            except TimeoutException:
-                logger.warning("Timeout waiting for search results")
+                service = ChromeService()
+                driver = webdriver.Chrome(service=service, options=self.chrome_options)
+                driver.set_page_load_timeout(30)
+                logger.info("Chrome driver initialized successfully")
+                break
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed to initialize driver: {str(e)}")
+                if attempt == 2:
+                    raise
+
+        # Construct search query
+        search_query = f"{niche} in {city}, {province}"
+        url = f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}"
+        
+        logger.info(f"Navigating to URL: {url}")
+        driver.get(url)
+        time.sleep(5)  # Allow more time for page load
+        
+        logger.info("Waiting for results to load...")
+        try:
+            # Wait for results container
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.Nv2PK"))
+            )
             
+            # Scroll to load more results
+            last_height = driver.execute_script("return document.body.scrollHeight")
+            while True:
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(2)
+                new_height = driver.execute_script("return document.body.scrollHeight")
+                if new_height == last_height:
+                    break
+                last_height = new_height
+                
+            # Find all results
+            elements = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
+            logger.info(f"Found {len(elements)} initial results")
+            
+            results = []
+            for idx, element in enumerate(elements[:max_leads]):
+                try:
+                    logger.info(f"Processing result {idx + 1}")
+                    info = self.extract_business_info(element, driver)
+                    if info:
+                        info['city'] = city
+                        results.append(info)
+                        self.save_lead_to_db(info)
+                        logger.info(f"Successfully extracted info for: {info.get('business_name', 'Unknown')}")
+                except Exception as e:
+                    logger.error(f"Error processing result {idx + 1}: {str(e)}")
+                    continue
+            
+            logger.info(f"Successfully found {len(results)} leads")
             return results
 
-        except Exception as e:
-            logger.error(f"Search error: {str(e)}")
+        except TimeoutException:
+            logger.error("Timeout waiting for search results to load")
             return []
-        finally:
-            if driver:
+            
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}")
+        return []
+    finally:
+        if driver:
+            try:
                 driver.quit()
+                logger.info("Chrome driver closed successfully")
+            except:
+                pass
 
     def extract_business_info(self, element, driver):
         try:
