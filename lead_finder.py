@@ -37,51 +37,36 @@ class BusinessLeadFinder:
         self.leads = []
 
     def setup_driver_options(self):
-    try:
-        self.chrome_options = Options()
-        
-        # Basic settings
-        self.chrome_options.add_argument('--headless=new')
-        self.chrome_options.add_argument('--no-sandbox')
-        self.chrome_options.add_argument('--disable-dev-shm-usage')
-        
-        # Additional required settings for Render
-        self.chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        self.chrome_options.add_argument('--disable-notifications')
-        self.chrome_options.add_argument('--disable-geolocation')
-        self.chrome_options.add_argument('--ignore-certificate-errors')
-        self.chrome_options.add_argument('--disable-infobars')
-        self.chrome_options.add_argument('--remote-debugging-port=9222')
-        
-        # Set window size
-        self.chrome_options.add_argument('--window-size=1920,1080')
-        
-        # Add realistic user agent
-        self.chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        
-        # Additional performance settings
-        self.chrome_options.add_argument('--disable-gpu')
-        self.chrome_options.add_argument('--disable-software-rasterizer')
-        self.chrome_options.add_argument('--disable-extensions')
-        
-        # Memory settings
-        self.chrome_options.add_argument('--disable-dev-shm-usage')
-        self.chrome_options.add_argument('--memory-pressure-off')
-        
-        # Add experimental options
-        self.chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
-        self.chrome_options.add_experimental_option('useAutomationExtension', False)
-        
-        # Handle Chrome binary location for Render
-        chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
-        if chrome_bin:
-            logger.info(f"Using Chrome binary at: {chrome_bin}")
-            self.chrome_options.binary_location = chrome_bin
+        try:
+            self.chrome_options = Options()
+            self.chrome_options.add_argument('--headless=new')
+            self.chrome_options.add_argument('--no-sandbox')
+            self.chrome_options.add_argument('--disable-dev-shm-usage')
+            self.chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+            self.chrome_options.add_argument('--disable-notifications')
+            self.chrome_options.add_argument('--disable-geolocation')
+            self.chrome_options.add_argument('--ignore-certificate-errors')
+            self.chrome_options.add_argument('--disable-infobars')
+            self.chrome_options.add_argument('--remote-debugging-port=9222')
+            self.chrome_options.add_argument('--window-size=1920,1080')
+            self.chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+            self.chrome_options.add_argument('--disable-gpu')
+            self.chrome_options.add_argument('--disable-software-rasterizer')
+            self.chrome_options.add_argument('--disable-extensions')
+            self.chrome_options.add_argument('--memory-pressure-off')
             
-        logger.info("Chrome options setup completed successfully")
-    except Exception as e:
-        logger.error(f"Error setting up Chrome options: {str(e)}")
-        raise
+            self.chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
+            self.chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
+            if chrome_bin:
+                logger.info(f"Using Chrome binary at: {chrome_bin}")
+                self.chrome_options.binary_location = chrome_bin
+                
+            logger.info("Chrome options setup completed")
+        except Exception as e:
+            logger.error(f"Error setting up Chrome options: {str(e)}")
+            raise
 
     def setup_database(self):
         try:
@@ -104,88 +89,90 @@ class BusinessLeadFinder:
                 )
             ''')
             self.conn.commit()
+            logger.info("Database setup completed")
         except Exception as e:
             logger.error(f"Database setup error: {str(e)}")
             raise
 
     def search_business(self, niche, city, province, max_leads=10):
-    driver = None
-    try:
-        logger.info(f"Starting search for {niche} in {city}, {province}")
-        
-        # Initialize driver with retries
-        for attempt in range(3):
-            try:
-                service = ChromeService()
-                driver = webdriver.Chrome(service=service, options=self.chrome_options)
-                driver.set_page_load_timeout(30)
-                logger.info("Chrome driver initialized successfully")
-                break
-            except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed to initialize driver: {str(e)}")
-                if attempt == 2:
-                    raise
-
-        # Construct search query
-        search_query = f"{niche} in {city}, {province}"
-        url = f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}"
-        
-        logger.info(f"Navigating to URL: {url}")
-        driver.get(url)
-        time.sleep(5)  # Allow more time for page load
-        
-        logger.info("Waiting for results to load...")
+        driver = None
         try:
-            # Wait for results container
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "div.Nv2PK"))
-            )
+            logger.info(f"Starting search for {niche} in {city}, {province}")
             
-            # Scroll to load more results
-            last_height = driver.execute_script("return document.body.scrollHeight")
-            while True:
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
-                new_height = driver.execute_script("return document.body.scrollHeight")
-                if new_height == last_height:
-                    break
-                last_height = new_height
-                
-            # Find all results
-            elements = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
-            logger.info(f"Found {len(elements)} initial results")
-            
-            results = []
-            for idx, element in enumerate(elements[:max_leads]):
+            # Initialize driver with retries
+            for attempt in range(3):
                 try:
-                    logger.info(f"Processing result {idx + 1}")
-                    info = self.extract_business_info(element, driver)
-                    if info:
-                        info['city'] = city
-                        results.append(info)
-                        self.save_lead_to_db(info)
-                        logger.info(f"Successfully extracted info for: {info.get('business_name', 'Unknown')}")
+                    service = ChromeService()
+                    driver = webdriver.Chrome(service=service, options=self.chrome_options)
+                    driver.set_page_load_timeout(30)
+                    logger.info("Chrome driver initialized successfully")
+                    break
                 except Exception as e:
-                    logger.error(f"Error processing result {idx + 1}: {str(e)}")
-                    continue
-            
-            logger.info(f"Successfully found {len(results)} leads")
-            return results
+                    logger.error(f"Attempt {attempt + 1} failed to initialize driver: {str(e)}")
+                    if attempt == 2:
+                        raise
 
-        except TimeoutException:
-            logger.error("Timeout waiting for search results to load")
-            return []
+            search_query = f"{niche} in {city}, {province}"
+            url = f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}"
             
-    except Exception as e:
-        logger.error(f"Search error: {str(e)}")
-        return []
-    finally:
-        if driver:
+            logger.info(f"Navigating to URL: {url}")
+            driver.get(url)
+            time.sleep(5)
+            
+            logger.info("Waiting for results to load...")
             try:
-                driver.quit()
-                logger.info("Chrome driver closed successfully")
-            except:
-                pass
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.Nv2PK"))
+                )
+                
+                # Scroll to load more results
+                last_height = driver.execute_script("return document.body.scrollHeight")
+                scroll_attempts = 0
+                
+                while scroll_attempts < 3:
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(2)
+                    new_height = driver.execute_script("return document.body.scrollHeight")
+                    if new_height == last_height:
+                        scroll_attempts += 1
+                    else:
+                        last_height = new_height
+                        scroll_attempts = 0
+                
+                elements = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
+                logger.info(f"Found {len(elements)} initial results")
+                
+                results = []
+                for idx, element in enumerate(elements[:max_leads]):
+                    try:
+                        logger.info(f"Processing result {idx + 1}")
+                        info = self.extract_business_info(element, driver)
+                        if info:
+                            info['city'] = city
+                            results.append(info)
+                            self.save_lead_to_db(info)
+                            logger.info(f"Successfully extracted info for: {info.get('business_name', 'Unknown')}")
+                    except Exception as e:
+                        logger.error(f"Error processing result {idx + 1}: {str(e)}")
+                        continue
+                
+                logger.info(f"Successfully found {len(results)} leads")
+                return results
+
+            except TimeoutException:
+                logger.error("Timeout waiting for search results to load")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Search error: {str(e)}")
+            return []
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                    logger.info("Chrome driver closed successfully")
+                except:
+                    pass
 
     def extract_business_info(self, element, driver):
         try:
@@ -270,7 +257,6 @@ lead_finder = BusinessLeadFinder()
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat()
@@ -278,7 +264,6 @@ def health_check():
 
 @app.route('/generate_leads', methods=['POST'])
 def generate_leads():
-    """Generate leads endpoint"""
     try:
         data = request.get_json()
         if not data:
@@ -310,7 +295,6 @@ def generate_leads():
 
 @app.route('/fetch_leads', methods=['GET'])
 def fetch_leads():
-    """Fetch leads endpoint"""
     try:
         limit = request.args.get('limit', 100, type=int)
         leads = lead_finder.get_leads_from_db(limit)
