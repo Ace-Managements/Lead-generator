@@ -1,16 +1,15 @@
 services:
   - type: web
-    name: lead-generator
+    name: lead-generator-api
     env: python
-    plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --timeout 120
+    startCommand: gunicorn app:app --timeout 300 --workers 1 --threads 1 --log-level debug
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.6
+        value: 3.9.12
       - key: FLASK_ENV
         value: production
-      - key: PORT
-        value: 10000
+      - key: PYTHONUNBUFFERED
+        value: "true"
     healthCheckPath: /health
     autoDeploy: true
