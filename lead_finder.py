@@ -42,31 +42,19 @@ class BusinessLeadFinder:
             self.chrome_options.add_argument('--headless=new')
             self.chrome_options.add_argument('--no-sandbox')
             self.chrome_options.add_argument('--disable-dev-shm-usage')
-            self.chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-            self.chrome_options.add_argument('--disable-notifications')
-            self.chrome_options.add_argument('--disable-geolocation')
-            self.chrome_options.add_argument('--ignore-certificate-errors')
-            self.chrome_options.add_argument('--disable-infobars')
-            self.chrome_options.add_argument('--remote-debugging-port=9222')
-            self.chrome_options.add_argument('--window-size=1920,1080')
-            self.chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             self.chrome_options.add_argument('--disable-gpu')
-            self.chrome_options.add_argument('--disable-software-rasterizer')
-            self.chrome_options.add_argument('--disable-extensions')
-            self.chrome_options.add_argument('--memory-pressure-off')
+            self.chrome_options.add_argument('--window-size=1920,1080')
+            self.chrome_options.add_argument('--disable-notifications')
+            self.chrome_options.add_argument('--enable-javascript')
             
-            self.chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
-            self.chrome_options.add_experimental_option('useAutomationExtension', False)
+            # Add user agent
+            self.chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
             chrome_bin = os.getenv('GOOGLE_CHROME_BIN')
             if chrome_bin:
-                logger.info(f"Using Chrome binary at: {chrome_bin}")
                 self.chrome_options.binary_location = chrome_bin
-                
-            logger.info("Chrome options setup completed")
         except Exception as e:
             logger.error(f"Error setting up Chrome options: {str(e)}")
-            raise
 
     def setup_database(self):
         try:
@@ -77,10 +65,8 @@ class BusinessLeadFinder:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     business_name TEXT,
                     phone TEXT,
-                    has_website TEXT,
                     website_url TEXT,
                     google_maps_url TEXT,
-                    business_hours TEXT,
                     rating REAL,
                     review_count INTEGER,
                     city TEXT,
@@ -89,183 +75,138 @@ class BusinessLeadFinder:
                 )
             ''')
             self.conn.commit()
-            logger.info("Database setup completed")
         except Exception as e:
             logger.error(f"Database setup error: {str(e)}")
             raise
 
     def search_business(self, niche, city, province, max_leads=10):
-    driver = None
-    try:
-        logger.info(f"Starting search for {niche} in {city}, {province}")
-        
-        # Initialize driver with retries
-        for attempt in range(3):
-            try:
-                logger.info(f"Chrome setup attempt {attempt + 1}")
-                service = ChromeService()
-                driver = webdriver.Chrome(service=service, options=self.chrome_options)
-                driver.set_page_load_timeout(45)  # Increased timeout
-                logger.info("Chrome driver initialized successfully")
-                break
-            except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed to initialize driver: {str(e)}")
-                if attempt == 2:
-                    raise
-
-        # Construct and encode search query
-        search_terms = [niche, "business", city, province]
-        search_query = " ".join(search_terms)
-        url = f"https://www.google.com/maps/search/{'+'.join(search_terms)}"
-        
-        logger.info(f"Navigating to URL: {url}")
-        driver.get(url)
-        
-        # Wait for initial page load
-        logger.info("Waiting for page to load...")
-        time.sleep(8)  # Increased initial wait time
-        
-        # Log page content for debugging
-        logger.info("Current page title: " + driver.title)
-        
-        # Check if we're actually on Google Maps
-        if "Google Maps" not in driver.title:
-            logger.error("Not on Google Maps page")
-            return []
-            
+        driver = None
         try:
-            # Wait for results with multiple selectors
-            selectors = ["div.Nv2PK", "div[role='article']", "div.bfdHYd"]
-            results_found = False
+            logger.info(f"Starting search for {niche} in {city}, {province}")
             
-            for selector in selectors:
+            for attempt in range(3):
                 try:
-                    logger.info(f"Trying selector: {selector}")
-                    WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                    )
-                    results_found = True
-                    logger.info(f"Found results with selector: {selector}")
+                    service = ChromeService()
+                    driver = webdriver.Chrome(service=service, options=self.chrome_options)
+                    driver.set_page_load_timeout(30)
+                    logger.info("Chrome driver initialized successfully")
                     break
-                except:
-                    continue
-            
-            if not results_found:
-                logger.error("No results found with any selector")
-                return []
-            
-            # Scroll to load more results
-            logger.info("Starting scroll process")
-            last_height = driver.execute_script("return document.body.scrollHeight")
-            scroll_attempt = 0
-            
-            while scroll_attempt < 5:  # Limited scrolls for testing
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(3)  # Increased scroll wait time
-                
-                new_height = driver.execute_script("return document.body.scrollHeight")
-                if new_height == last_height:
-                    scroll_attempt += 1
-                else:
-                    last_height = new_height
-                    scroll_attempt = 0
-                    
-                logger.info(f"Scroll attempt {scroll_attempt}: Height {new_height}")
-            
-            # Find all results
-            elements = []
-            for selector in selectors:
-                elements.extend(driver.find_elements(By.CSS_SELECTOR, selector))
-            
-            logger.info(f"Found {len(elements)} total results")
-            
-            results = []
-            processed = 0
-            
-            for element in elements[:max_leads]:
-                try:
-                    if processed >= max_leads:
-                        break
-                        
-                    info = self.extract_business_info(element, driver)
-                    if info:
-                        info['city'] = city
-                        results.append(info)
-                        self.save_lead_to_db(info)
-                        processed += 1
-                        logger.info(f"Successfully processed business: {info.get('business_name', 'Unknown')}")
                 except Exception as e:
-                    logger.error(f"Error processing result: {str(e)}")
-                    continue
+                    logger.error(f"Driver initialization attempt {attempt + 1} failed: {str(e)}")
+                    if attempt == 2:
+                        raise
             
-            logger.info(f"Successfully found {len(results)} leads")
-            return results
+            search_query = f"{niche} in {city}, {province}"
+            url = f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}"
             
-        except TimeoutException:
-            logger.error("Timeout waiting for results")
-            return []
-        except Exception as e:
-            logger.error(f"Error during search: {str(e)}")
-            return []
+            logger.info(f"Navigating to URL: {url}")
+            driver.get(url)
+            time.sleep(5)
             
-    except Exception as e:
-        logger.error(f"Search error: {str(e)}")
-        return []
-    finally:
-        if driver:
+            logger.info("Waiting for results...")
             try:
-                driver.quit()
-                logger.info("Chrome driver closed successfully")
-            except:
-                pass
+                results_container = WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.Nv2PK"))
+                )
+                
+                # Scroll to load more results
+                last_height = driver.execute_script("return document.body.scrollHeight")
+                scroll_attempts = 0
+                while scroll_attempts < 3:
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(2)
+                    new_height = driver.execute_script("return document.body.scrollHeight")
+                    if new_height == last_height:
+                        scroll_attempts += 1
+                    else:
+                        scroll_attempts = 0
+                        last_height = new_height
+                
+                elements = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
+                logger.info(f"Found {len(elements)} initial results")
+                
+                results = []
+                for idx, element in enumerate(elements[:max_leads]):
+                    try:
+                        logger.info(f"Processing result {idx + 1}")
+                        info = self.extract_business_info(element, driver)
+                        if info:
+                            info['city'] = city
+                            results.append(info)
+                            self.save_lead_to_db(info)
+                            logger.info(f"Successfully processed: {info.get('business_name', 'Unknown')}")
+                    except Exception as e:
+                        logger.error(f"Error processing result {idx + 1}: {str(e)}")
+                        continue
+                
+                return results
+                
+            except TimeoutException:
+                logger.error("Timeout waiting for results to load")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Search error: {str(e)}")
+            return []
+            
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                    logger.info("Chrome driver closed successfully")
+                except:
+                    pass
 
     def extract_business_info(self, element, driver):
         try:
             name = element.find_element(By.CSS_SELECTOR, "div.fontHeadlineSmall").text.strip()
-            return {
+            info = {
                 'business_name': name,
-                'phone': self.extract_phone(element, driver),
-                'website_url': self.extract_website(element, driver),
-                'rating': self.extract_rating(element),
-                'review_count': self.extract_reviews(element),
-                'google_maps_url': driver.current_url
+                'phone': '',
+                'website_url': '',
+                'google_maps_url': driver.current_url,
+                'rating': None,
+                'review_count': 0
             }
+            
+            try:
+                element.click()
+                time.sleep(2)
+                
+                # Get phone number
+                phone_elements = driver.find_elements(By.CSS_SELECTOR, "button[data-tooltip*='phone']")
+                for elem in phone_elements:
+                    text = elem.get_attribute("aria-label") or elem.text
+                    if match := re.search(r'\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})', text):
+                        info['phone'] = f"({match.group(1)}) {match.group(2)}-{match.group(3)}"
+                        break
+                
+                # Get website
+                try:
+                    website_elem = driver.find_element(By.CSS_SELECTOR, "a[data-tooltip='Open website']")
+                    info['website_url'] = website_elem.get_attribute('href')
+                except:
+                    pass
+                
+                # Get rating and reviews
+                try:
+                    rating_elem = driver.find_element(By.CSS_SELECTOR, "span.MW4etd")
+                    info['rating'] = float(rating_elem.text.strip())
+                    
+                    reviews = driver.find_element(By.CSS_SELECTOR, "span.UY7F9").text
+                    if match := re.search(r'\((\d+)\)', reviews):
+                        info['review_count'] = int(match.group(1))
+                except:
+                    pass
+                
+            except Exception as e:
+                logger.error(f"Error extracting details: {str(e)}")
+            
+            return info
+            
         except Exception as e:
-            logger.error(f"Error extracting info: {str(e)}")
+            logger.error(f"Error extracting business info: {str(e)}")
             return None
-
-    def extract_phone(self, element, driver):
-        try:
-            phone_elements = element.find_elements(By.CSS_SELECTOR, "[data-tooltip*='phone']")
-            for elem in phone_elements:
-                text = elem.get_attribute("aria-label") or elem.text
-                if match := re.search(r'\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})', text):
-                    return f"({match.group(1)}) {match.group(2)}-{match.group(3)}"
-        except:
-            pass
-        return ''
-
-    def extract_website(self, element, driver):
-        try:
-            website_elem = element.find_element(By.CSS_SELECTOR, "a[data-tooltip='Open website']")
-            return website_elem.get_attribute('href')
-        except:
-            return ''
-
-    def extract_rating(self, element):
-        try:
-            rating_elem = element.find_element(By.CSS_SELECTOR, "span.MW4etd")
-            return float(rating_elem.text.strip())
-        except:
-            return None
-
-    def extract_reviews(self, element):
-        try:
-            reviews = element.find_element(By.CSS_SELECTOR, "span.UY7F9").text
-            if match := re.search(r'\((\d+)\)', reviews):
-                return int(match.group(1))
-        except:
-            return 0
 
     def save_lead_to_db(self, lead):
         try:
