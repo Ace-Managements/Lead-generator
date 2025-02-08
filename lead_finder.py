@@ -95,84 +95,129 @@ class BusinessLeadFinder:
             raise
 
     def search_business(self, niche, city, province, max_leads=10):
-        driver = None
-        try:
-            logger.info(f"Starting search for {niche} in {city}, {province}")
-            
-            # Initialize driver with retries
-            for attempt in range(3):
-                try:
-                    service = ChromeService()
-                    driver = webdriver.Chrome(service=service, options=self.chrome_options)
-                    driver.set_page_load_timeout(30)
-                    logger.info("Chrome driver initialized successfully")
-                    break
-                except Exception as e:
-                    logger.error(f"Attempt {attempt + 1} failed to initialize driver: {str(e)}")
-                    if attempt == 2:
-                        raise
-
-            search_query = f"{niche} in {city}, {province}"
-            url = f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}"
-            
-            logger.info(f"Navigating to URL: {url}")
-            driver.get(url)
-            time.sleep(5)
-            
-            logger.info("Waiting for results to load...")
+    driver = None
+    try:
+        logger.info(f"Starting search for {niche} in {city}, {province}")
+        
+        # Initialize driver with retries
+        for attempt in range(3):
             try:
-                WebDriverWait(driver, 20).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.Nv2PK"))
-                )
-                
-                # Scroll to load more results
-                last_height = driver.execute_script("return document.body.scrollHeight")
-                scroll_attempts = 0
-                
-                while scroll_attempts < 3:
-                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(2)
-                    new_height = driver.execute_script("return document.body.scrollHeight")
-                    if new_height == last_height:
-                        scroll_attempts += 1
-                    else:
-                        last_height = new_height
-                        scroll_attempts = 0
-                
-                elements = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
-                logger.info(f"Found {len(elements)} initial results")
-                
-                results = []
-                for idx, element in enumerate(elements[:max_leads]):
-                    try:
-                        logger.info(f"Processing result {idx + 1}")
-                        info = self.extract_business_info(element, driver)
-                        if info:
-                            info['city'] = city
-                            results.append(info)
-                            self.save_lead_to_db(info)
-                            logger.info(f"Successfully extracted info for: {info.get('business_name', 'Unknown')}")
-                    except Exception as e:
-                        logger.error(f"Error processing result {idx + 1}: {str(e)}")
-                        continue
-                
-                logger.info(f"Successfully found {len(results)} leads")
-                return results
+                logger.info(f"Chrome setup attempt {attempt + 1}")
+                service = ChromeService()
+                driver = webdriver.Chrome(service=service, options=self.chrome_options)
+                driver.set_page_load_timeout(45)  # Increased timeout
+                logger.info("Chrome driver initialized successfully")
+                break
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed to initialize driver: {str(e)}")
+                if attempt == 2:
+                    raise
 
-            except TimeoutException:
-                logger.error("Timeout waiting for search results to load")
-                return []
-                
-        except Exception as e:
-            logger.error(f"Search error: {str(e)}")
+        # Construct and encode search query
+        search_terms = [niche, "business", city, province]
+        search_query = " ".join(search_terms)
+        url = f"https://www.google.com/maps/search/{'+'.join(search_terms)}"
+        
+        logger.info(f"Navigating to URL: {url}")
+        driver.get(url)
+        
+        # Wait for initial page load
+        logger.info("Waiting for page to load...")
+        time.sleep(8)  # Increased initial wait time
+        
+        # Log page content for debugging
+        logger.info("Current page title: " + driver.title)
+        
+        # Check if we're actually on Google Maps
+        if "Google Maps" not in driver.title:
+            logger.error("Not on Google Maps page")
             return []
-        finally:
-            if driver:
+            
+        try:
+            # Wait for results with multiple selectors
+            selectors = ["div.Nv2PK", "div[role='article']", "div.bfdHYd"]
+            results_found = False
+            
+            for selector in selectors:
                 try:
-                    driver.quit()
-                    logger.info("Chrome driver closed successfully")
+                    logger.info(f"Trying selector: {selector}")
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    results_found = True
+                    logger.info(f"Found results with selector: {selector}")
+                    break
                 except:
-                    pass
+                    continue
+            
+            if not results_found:
+                logger.error("No results found with any selector")
+                return []
+            
+            # Scroll to load more results
+            logger.info("Starting scroll process")
+            last_height = driver.execute_script("return document.body.scrollHeight")
+            scroll_attempt = 0
+            
+            while scroll_attempt < 5:  # Limited scrolls for testing
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(3)  # Increased scroll wait time
+                
+                new_height = driver.execute_script("return document.body.scrollHeight")
+                if new_height == last_height:
+                    scroll_attempt += 1
+                else:
+                    last_height = new_height
+                    scroll_attempt = 0
+                    
+                logger.info(f"Scroll attempt {scroll_attempt}: Height {new_height}")
+            
+            # Find all results
+            elements = []
+            for selector in selectors:
+                elements.extend(driver.find_elements(By.CSS_SELECTOR, selector))
+            
+            logger.info(f"Found {len(elements)} total results")
+            
+            results = []
+            processed = 0
+            
+            for element in elements[:max_leads]:
+                try:
+                    if processed >= max_leads:
+                        break
+                        
+                    info = self.extract_business_info(element, driver)
+                    if info:
+                        info['city'] = city
+                        results.append(info)
+                        self.save_lead_to_db(info)
+                        processed += 1
+                        logger.info(f"Successfully processed business: {info.get('business_name', 'Unknown')}")
+                except Exception as e:
+                    logger.error(f"Error processing result: {str(e)}")
+                    continue
+            
+            logger.info(f"Successfully found {len(results)} leads")
+            return results
+            
+        except TimeoutException:
+            logger.error("Timeout waiting for results")
+            return []
+        except Exception as e:
+            logger.error(f"Error during search: {str(e)}")
+            return []
+            
+    except Exception as e:
+        logger.error(f"Search error: {str(e)}")
+        return []
+    finally:
+        if driver:
+            try:
+                driver.quit()
+                logger.info("Chrome driver closed successfully")
+            except:
+                pass
 
     def extract_business_info(self, element, driver):
         try:
